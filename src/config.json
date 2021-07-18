@@ -1,0 +1,28 @@
+{
+    "bridge": {
+        ".............":""
+    },
+    "accessories": [
+        {
+            "accessory": "mqtt-tasmota-led-strip",
+            "name": "NAME OF THIS ACCESSORY",
+            "url": "mqtt://MQTT–BROKER-ADDRESS",
+            "username": "MQTT USER NAME",
+            "password": "MQTT PASSWORD",
+            "topics": {
+                "statusGet": "stat/led_strip/RESULT",
+                "statusSet": "cmnd/led_strip/POWER",
+                "stateGet": "tele/led_strip/STATE"
+            },
+            "onValue": "ON",
+            "offValue": "OFF",
+            "activityTopic": "tele/led_strip/LWT",
+            "activityParameter": "Online",
+            "startCmd": "cmnd/led_strip/TelePeriod",
+            "startParameter": "60",
+            "manufacturer": "",
+            "model": "ws2812",
+            "serialNumberMAC": "MAC OR SERIAL NUMBER"
+        }
+    ]
+}
