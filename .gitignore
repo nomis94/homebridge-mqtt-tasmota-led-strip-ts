@@ -2,6 +2,7 @@
 src/dbconfig.ts
 *.swp
 src/*.swp
+package-lock.json
 
 ### HAP-NodeJS files
 persist
