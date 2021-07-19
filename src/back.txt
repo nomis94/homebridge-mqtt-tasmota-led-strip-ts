@@ -1,0 +1,284 @@
+import {
+  AccessoryConfig,
+  AccessoryPlugin,
+  API,
+  CharacteristicEventTypes,
+  CharacteristicGetCallback,
+  CharacteristicSetCallback,
+  CharacteristicValue,
+  HAP,
+  Logging,
+  Service
+} from "homebridge";
+
+import {
+	IClientOptions,
+    Client, 
+    connect, 
+    IConnackPacket
+} from "mqtt";
+
+let hap: HAP;
+
+//  Initializer function called when the plugin is loaded.
+
+export = (api: API) => {
+  hap = api.hap;
+  api.registerAccessory("homebridge-mqtt-tasmota-led-strip-ts", MqttTasmotaLedStrip);
+};
+
+
+
+// Tasmota WS2812 Accessory plugin for HomeBridge
+class MqttTasmotaLedStrip implements AccessoryPlugin {
+  private readonly service: Service;
+  private readonly informationService: Service;
+
+  private readonly log: Logging;
+  private readonly name: string;
+  private readonly topicStatusGet: string;
+  private readonly topicStatusSet: string;
+  private readonly topicsStateGet: string;
+
+  private readonly activityTopic: string;
+  private readonly activityParameter: string;
+
+ 
+  private readonly topicSetBrightness: string;
+  private readonly topicSetHSB: string;
+
+  private readonly powerValue: string;
+  private readonly onValue: string;
+  private readonly offValue: string;
+
+  private activeStat = false;
+  private switchOn = false;
+  private lb_brightness = 0;
+  private lb_hue = 0;
+  private lb_saturation = 0;
+  private lb_hsb_color = "0,0,0";
+
+
+
+
+  // MQTT variables
+  private readonly mqttURL: string;
+  private readonly mqttClientID: string; 
+  private readonly mqttOptions: IClientOptions; 
+  private mqttHandle: Client;
+
+
+  constructor(log: Logging, config: AccessoryConfig, api: API) {
+    this.log = log;
+    this.name = config.name;
+ 
+	// set topics
+    this.topicStatusGet = config["topics"].statusGet;
+    this.topicStatusSet = config["topics"].statusSet;
+    this.topicsStateGet = (config["topics"].stateGet !== undefined) ? config["topics"].stateGet : "";
+    this.topicSetBrightness = config["topics"].setBrightness; 
+    this.topicSetHSB = config["topics"].setHSB;
+
+    this.powerValue = (config["powerValue"] !== undefined) ? config["powerValue"] : "POWER";
+    this.onValue = (config["onValue"] !== undefined) ? config["onValue"] : "ON";
+    this.offValue = (config["offValue"] !== undefined) ? config["offValue"] : "OFF";
+
+	// config
+    this.switchOn = false;
+    this.lb_brightness = 0;
+    this.lb_hue = 0;
+    this.lb_saturation = 0;
+    this.lb_hsb_color = "0,0,0";
+    
+ 
+	// MQTT stuff
+	this.mqttURL = config.url;
+	this.mqttClientID = 'mqttjs_' + Math.random().toString(16).substr(2, 8);
+	this.mqttOptions = {
+		keepalive: 10,
+		clientId: this.mqttClientID,
+		protocolId: 'MQTT',
+		protocolVersion: 4,
+		clean: true,
+		reconnectPeriod: 1000,
+		connectTimeout: 30 * 1000,
+		will: {
+			topic: config["name"],
+			payload: ' >> Connection closed abnormally..!',
+			qos: 0,
+			retain: false
+		},
+		username: config.username,
+		password: config.password,
+		rejectUnauthorized: false
+	};
+
+
+    // Check for Online Device
+    if (config["activityTopic"] !== undefined && config["activityParameter"] !== undefined) {
+        this.activityTopic = config["activityTopic"];
+        this.activityParameter = config["activityParameter"];
+    } else {
+        this.activityTopic = "";
+        this.activityParameter = "";
+    }
+   
+    this.service = new hap.Service.Lightbulb(this.name);
+    
+
+
+    this.service.getCharacteristic(hap.Characteristic.On)
+        .on(CharacteristicEventTypes.GET, (callback: CharacteristicGetCallback) => {
+		   log.info("Characteristic GET switchStatus");
+           callback(undefined, this.switchOn);
+		})
+        .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
+			this.switchOn = value as boolean;
+			log.info("Switch state was set to: " + (this.switchOn? this.onValue: this.offValue));
+			this.mqttHandle.publish(this.topicStatusSet, (this.switchOn? this.onValue: this.offValue));
+			callback();
+        });
+
+    this.service.getCharacteristic(hap.Characteristic.Active)
+         .on(CharacteristicEventTypes.GET, (callback: CharacteristicGetCallback) => {
+			log.info(this.name, " -  Activity Set : ", this.activeStat);
+			callback(null, this.activeStat);
+		});
+       
+
+
+    this.service.getCharacteristic(hap.Characteristic.Brightness)
+        .on(CharacteristicEventTypes.GET, (callback: CharacteristicGetCallback) => {
+			log.info(this.name, " -  brightness get: ", this.lb_brightness);
+			callback(undefined, this.lb_brightness);
+		})
+        .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
+			this.lb_brightness = value as number;
+			log.info("lb_brightness set to =", this.lb_brightness);
+			this.mqttHandle.publish(this.topicSetBrightness, String(value));
+			callback();
+        });
+ 
+    this.service.getCharacteristic(hap.Characteristic.Hue)
+        .on(CharacteristicEventTypes.GET, (callback: CharacteristicGetCallback) => {
+			log.info(this.name, " -  brightness get: ", this.lb_hue);
+			callback(undefined, this.lb_hue);
+		})
+        .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
+			this.lb_hue = value as number;
+			log.info("lb_hue set to =", this.lb_hue);
+            var HSBColor = `${this.lb_hue},${this.lb_saturation},${this.lb_brightness}`;
+			this.mqttHandle.publish(this.topicSetHSB, String(value));
+			callback();
+        });
+
+
+    this.service.getCharacteristic(hap.Characteristic.Saturation)
+        .on(CharacteristicEventTypes.GET, (callback: CharacteristicGetCallback) => {
+			log.info(this.name, " -  brightness get: ", this.lb_saturation);
+			callback(undefined, this.lb_saturation);
+		})
+        .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
+			this.lb_saturation = value as number;
+			log.info("lb_saturation set to =", this.lb_saturation);
+			callback();
+        });
+
+ 
+    this.informationService = new hap.Service.AccessoryInformation();
+    this.informationService
+        .setCharacteristic(hap.Characteristic.Name, this.name);
+        //.setCharacteristic(hap.Characteristic.Manufacturer, this.manufacturer)
+        //.setCharacteristic(hap.Characteristic.Model, this.model)
+        //.setCharacteristic(hap.Characteristic.SerialNumber, this.serialNumberMAC);
+
+
+    this.mqttHandle = connect(this.mqttURL, this.mqttOptions);
+	this.mqttHandle
+		.subscribe({
+			[this.topicStatusGet]: {qos: 0}, 
+			[this.topicsStateGet]: {qos: 0}, 
+			[this.activityTopic]: {qos: 0} 
+		}, (err, granted) => {
+			granted.forEach(({topic, qos}) => {
+				log.info(`subscribed to ${topic} with qos=${qos}`)
+			})
+		})
+
+        .on("error", () => {
+            log.info("Error event on MQTT");
+        })
+
+		.on("connect", (packet: IConnackPacket) => {
+			log.info("Succesfully connect to MQTT Broker [", this.mqttURL, "]");
+            if (config["startCmd"] !== undefined && config["startParameter"] !== undefined) {
+               this.mqttHandle.publish(config["startCmd"], config["startParameter"]);
+            }
+		})
+
+		.on("message", (topic: string, payload: Buffer) => {
+			let message = payload.toString();
+			if (topic == this.topicStatusGet) {
+				try {
+					var data = JSON.parse(message);
+					if (data.hasOwnProperty(this.powerValue)) {
+						this.switchOn = (data[this.powerValue] == this.onValue);
+						this.service.updateCharacteristic(hap.Characteristic.On, this.switchOn);
+					}
+				} 
+				catch (e) {               
+					this.switchOn = (message.toString() == this.onValue);
+					log.info("Exception topicStatusGet", e);
+				}
+			}
+
+			// cyclic self message from esp8266 
+			else if (topic == this.topicsStateGet) {
+				try {
+					var data = JSON.parse(message);
+					if (data.hasOwnProperty(this.powerValue)) {
+						this.switchOn = (data[this.powerValue] == this.onValue);
+						this.service.updateCharacteristic(hap.Characteristic.On, this.switchOn);
+					}
+					if(data.hasOwnProperty("HSBColor")){
+						this.lb_hsb_color = data.HSBColor;
+						[this.lb_hue, this.lb_saturation, this.lb_brightness] = data.HSBColor.split(',');
+						this.service.updateCharacteristic(hap.Characteristic.Hue, this.lb_hue);
+						this.service.updateCharacteristic(hap.Characteristic.Saturation, this.lb_saturation);
+						this.service.updateCharacteristic(hap.Characteristic.Brightness, this.lb_brightness);
+					}
+				} 
+				catch (e) {
+					log.info("Exception topicsStateGet", e);
+				}
+			} 
+			else if (topic == this.activityTopic) {
+				log.info("activityTopic");
+				this.activeStat = (message.toString() == this.activityParameter);
+				this.service.updateCharacteristic(hap.Characteristic.StatusActive, this.activeStat);
+			}
+		});
+    
+    log.info("LED Strip Service configured!");
+  }
+
+  /*
+   * This method is optional to implement. It is called when HomeKit ask to identify the accessory.
+   * Typical this only ever happens at the pairing process.
+   */
+  identify(): void {
+    this.log("Identify!");
+  }
+
+  /*
+   * This method is called directly after creation of this instance.
+   * It should return all services which should be added to the accessory.
+   */
+  getServices(): Service[] {
+    return [
+      this.informationService,
+      this.service,
+    ];
+  }
+
+}
